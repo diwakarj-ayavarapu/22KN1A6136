@@ -7,44 +7,29 @@ import random
 import string
 import logging
 import uvicorn
-
-# Initialize FastAPI
 app = FastAPI()
-
 @app.get("/")
 def root():
     return {"message": "Welcome to the URL Shortener API. Use POST /shorturls to create short URLs."}
-
-# Setup logger
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("url-shortener")
 logger.setLevel(logging.INFO)
-
-
-# In-memory store
 url_store = {}
-
-# Request model
 class ShortenURLRequest(BaseModel):
     url: HttpUrl
     validity: Optional[int] = 30  
     shortcode: Optional[str] = None
-
-# Response model
 class ShortenURLResponse(BaseModel):
     shortLink: str
     expiry: str
-
 def generate_shortcode(length=6):
     return ''.join(random.choices(string.ascii_letters + string.digits, k=length))
-
 def get_unique_shortcode(retries=5):
     for _ in range(retries):
         code = generate_shortcode()
         if code not in url_store:
             return code
     raise HTTPException(status_code=500, detail="Could not generate unique shortcode, please try again")
-
 @app.post("/shorturls", response_model=ShortenURLResponse, status_code=201)
 def create_short_url(request: ShortenURLRequest):
     if request.shortcode:
@@ -78,7 +63,6 @@ def redirect_short_url(shortcode: str):
 
     if datetime.utcnow() > entry["expiry"]:
         logger.info(f"Shortcode expired: {shortcode}")
-        # Optionally, remove expired shortcode
         del url_store[shortcode]
         raise HTTPException(status_code=410, detail="Shortcode expired")
 
