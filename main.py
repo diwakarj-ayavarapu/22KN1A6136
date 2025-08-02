@@ -6,65 +6,70 @@ from datetime import datetime, timedelta
 import random
 import string
 import logging
-import uvicorn
-app = FastAPI()
-@app.get("/")
-def root():
-    return {"message": "Welcome to the URL Shortener API. Use POST /shorturls to create short URLs."}
+app = FastAPI(title="Simple URL Shortener")
+# Setup basic logging
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("url-shortener")
-logger.setLevel(logging.INFO)
-url_store = {}
-class ShortenURLRequest(BaseModel):
+logger = logging.getLogger("shortener")
+# In-memory URL store
+short_links = {}
+# Request model for creating short URLs
+class URLCreateRequest(BaseModel):
     url: HttpUrl
-    validity: Optional[int] = 30  
-    shortcode: Optional[str] = None
-class ShortenURLResponse(BaseModel):
-    shortLink: str
-    expiry: str
-def generate_shortcode(length=6):
+    validity: Optional[int] = 30  # in minutes
+    custom_code: Optional[str] = None
+# Response model after URL is shortened
+class URLCreateResponse(BaseModel):
+    short_url: str
+    expires_at: str
+# Utility to generate a random shortcode
+def create_random_code(length: int = 6) -> str:
     return ''.join(random.choices(string.ascii_letters + string.digits, k=length))
-def get_unique_shortcode(retries=5):
-    for _ in range(retries):
-        code = generate_shortcode()
-        if code not in url_store:
+# Utility to ensure unique shortcode
+def get_unique_code(max_attempts: int = 5) -> str:
+    for _ in range(max_attempts):
+        code = create_random_code()
+        if code not in short_links:
             return code
-    raise HTTPException(status_code=500, detail="Could not generate unique shortcode, please try again")
-@app.post("/shorturls", response_model=ShortenURLResponse, status_code=201)
-def create_short_url(request: ShortenURLRequest):
-    if request.shortcode:
-        code = request.shortcode
-        if code in url_store:
-            logger.warning(f"Attempt to create duplicate shortcode: {code}")
-            raise HTTPException(status_code=400, detail="Shortcode already exists")
-    else:
-        code = get_unique_shortcode()
+    raise HTTPException(status_code=500, detail="Unable to generate unique shortcode")
+# Root endpoint
+@app.get("/")
+def home():
+    return {"message": "Welcome to the FastAPI URL Shortener. Use POST /shorten to create a short URL."}
+# Create short URL endpoint
+@app.post("/shorten", response_model=URLCreateResponse, status_code=201)
+def shorten_url(payload: URLCreateRequest):
+    code = payload.custom_code or get_unique_code()
 
-    expiry_time = datetime.utcnow() + timedelta(minutes=request.validity or 30)
+    if code in short_links:
+        logger.warning(f"Shortcode already in use: {code}")
+        raise HTTPException(status_code=400, detail="Shortcode already exists")
 
-    url_store[code] = {
-        "original_url": str(request.url),
-        "expiry": expiry_time
+    expiry = datetime.utcnow() + timedelta(minutes=payload.validity or 30)
+
+    short_links[code] = {
+        "original_url": str(payload.url),
+        "expires_at": expiry
     }
 
-    logger.info(f"Created shortcode {code} for URL {request.url} with expiry {expiry_time.isoformat()}")
+    logger.info(f"New short URL created: /{code} → {payload.url} (expires at {expiry.isoformat()})")
 
-    return ShortenURLResponse(
-        shortLink=f"http://localhost:8000/{code}",
-        expiry=expiry_time.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return URLCreateResponse(
+        short_url=f"http://localhost:8000/{code}",
+        expires_at=expiry.strftime("%Y-%m-%dT%H:%M:%SZ")
     )
+# Redirect endpoint
+@app.get("/{code}")
+def redirect_to_original(code: str):
+    link_info = short_links.get(code)
 
-@app.get("/{shortcode}")
-def redirect_short_url(shortcode: str):
-    entry = url_store.get(shortcode)
-    if not entry:
-        logger.warning(f"Shortcode not found: {shortcode}")
+    if not link_info:
+        logger.warning(f"Invalid shortcode requested: {code}")
         raise HTTPException(status_code=404, detail="Shortcode not found")
 
-    if datetime.utcnow() > entry["expiry"]:
-        logger.info(f"Shortcode expired: {shortcode}")
-        del url_store[shortcode]
-        raise HTTPException(status_code=410, detail="Shortcode expired")
+    if datetime.utcnow() > link_info["expires_at"]:
+        logger.info(f"Shortcode expired and removed: {code}")
+        del short_links[code]
+        raise HTTPException(status_code=410, detail="Shortcode has expired")
 
-    logger.info(f"Redirecting shortcode {shortcode} to {entry['original_url']}")
-    return RedirectResponse(entry["original_url"])
+    logger.info(f"Redirecting {code} → {link_info['original_url']}")
+    return RedirectResponse(link_info["original_url"])
